@@ -79,4 +79,11 @@ inline std::ostream& operator<<(std::ostream& out, const point& p) {
     return out << "(" << p.x << ", " << p.y << ")";
 }
 
+point randomPoint(std::array<point,2> const& bounds, std::mt19937 &rng) {
+    std::uniform_real_distribution<float> dist_x(bounds[0].x, bounds[1].x);
+    std::uniform_real_distribution<float> dist_y(bounds[0].y, bounds[1].y);
+
+    return point(dist_x(rng), dist_y(rng));
+}
+
 #endif // POINT_HPP
