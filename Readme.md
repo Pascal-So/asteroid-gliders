@@ -16,3 +16,6 @@ cd build
 cmake ..
 cmake --build .
 ```
+
+
+![Orbits](orbits.png)

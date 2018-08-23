@@ -11,20 +11,22 @@
 const unsigned int height = 720;
 const unsigned int width = 1080;
 
-int seed = 23;
+int seed = 26;
 const size_t nr_planets = 4;
-const size_t nr_gliders = 100;
+const size_t nr_gliders = 4000;
+
+const bool debug_output = false;
 
 // ##############################################
 
 
-point gliderStep(point const& pos, const float last_potential, System const& system) {
-    const float stepsize = 1.f;
+point gliderStep(point const& pos, const float desired_potential, System const& system) {
+    const float stepsize = 3.f;
 
     // First calculate the new position by integrating with the midpoint method.
 
     point gravity = system.probeGravity(pos).norm();
-    point motion_half (gravity.y, -gravity.x); // counter-clockwise around planet
+    point motion_half (gravity.y, -gravity.x);
     motion_half *= stepsize / 2;
 
     gravity = system.probeGravity(pos + motion_half).norm();
@@ -33,13 +35,20 @@ point gliderStep(point const& pos, const float last_potential, System const& sys
 
     const point new_pos_initial = pos + motion;
 
-    // return new_pos_initial;
-    // return pos + motion_half * 2.f;
+    // Uncomment this to only use explicit euler / midpoint method.
+    // return pos + motion_half * 2.f; // Euler
+    return new_pos_initial;         // Midpoint
+
+
+    // Then we correct the difference to the desired gravitational potential.
     
-    // Then correct for the difference in gravitational potential. Here we assume the
-    // slope to be linear, because we're only correcting in a small neighbourhood. We
-    // can thus use the fact that the gravitational force vector is minus the gradient
-    // of the potential, so we have: (where '·' denotes the scalar product)
+    const float new_potential = system.probePotential(new_pos_initial);
+    const float diff = new_potential - desired_potential;
+    
+    // Here we assume the slope to be linear, because we're only correcting in a small
+    // neighbourhood. We can thus use the fact that the gravitational force vector is
+    // minus the gradient of the potential, so we have: (where '·' denotes the scalar
+    // product)
     //
     //      delta potential = offset · -gravity
     //                      = ± |offset| * |gravity|   // We're only moving along the
@@ -53,32 +62,33 @@ point gliderStep(point const& pos, const float last_potential, System const& sys
     //      offset = ± delta potential * gravity / |gravity|²
     //
     // The sign can be seen to be a minus by thinking about it..
-    
-    const float new_potential = system.probePotential(new_pos_initial);
+
     gravity = system.probeGravity(new_pos_initial);
+    const point corrected_pos_midpoint = new_pos_initial + diff * gravity / gravity.sqmag() / 2.f;
+    gravity = system.probeGravity(corrected_pos_midpoint);
+    const point corrected_pos = new_pos_initial + diff * gravity / gravity.sqmag();
 
-    const point final_pos =
-        new_pos_initial + gravity * (new_potential - last_potential) / gravity.sqmag();
+    if (debug_output) {
+        const float new_diff = system.probePotential(corrected_pos) - desired_potential;
+        std::cerr << "Absolute potential:           " << new_potential << '\n';
+        std::cerr << "Difference before correcting: " << diff << '\n';
+        std::cerr << "Difference after correcting:  " << new_diff << '\n';
+        std::cerr << "Improved error by factor:     " << diff / new_diff << '\n';
 
-    // const float old_diff = new_potential - last_potential;
-    // const float new_diff = system.probePotential(final_pos) - last_potential;
+        std::cerr << '\n';
+    }
 
-    // std::cerr << "Improved error by factor: " << old_diff / new_diff << '\n';
-    
-    // std::cerr << "Difference before correcting: " << old_diff << '\n';
-    // std::cerr << "Difference after correcting:  " << new_diff << "\n\n";
-
-    return final_pos;
+    return corrected_pos;
 }
 
 
 
 void drawPlanets(sf::RenderWindow* win, System const& system) {
-    
+    const sf::Color planet_color(100, 100, 100);
     for (auto const& p:system.planets) {
         float radius = sqrt(p.second) * 10.f;
         sf::CircleShape planet(radius);
-        planet.setFillColor(sf::Color(180, 200, 210));
+        planet.setFillColor(planet_color);
         planet.setPosition(p.first.x - radius, p.first.y - radius);
         win->draw(planet);
     }
@@ -90,16 +100,17 @@ void drawSingleTrajectory(sf::RenderWindow* win, System const& system, point con
     float sq_last_dist = 1.f;
     const float sq_lower_dist_limit = 0.001f;
 
+    const sf::Color glider_color(255, 255, 255, 30);
+
     std::vector<sf::Vertex> vertices;
     vertices.emplace_back(sf::Vector2f(last_pos.x, last_pos.y),
-                          sf::Color(200, 200, 200, 100));
+                          glider_color);
 
-    int max_steps = 3000;
+    int max_steps = 300;
     while (sq_last_dist > sq_lower_dist_limit && --max_steps) {
         const point new_pos = gliderStep(last_pos, last_potential, system);
 
-        vertices.emplace_back(sf::Vector2f(new_pos.x, new_pos.y), sf::Color(200, 200, 200, 100));
-        // std::cout << new_pos << '\n';
+        vertices.emplace_back(sf::Vector2f(new_pos.x, new_pos.y), glider_color);
         sq_last_dist = (new_pos - last_pos).sqmag();
         last_pos = new_pos;
     }
@@ -137,6 +148,7 @@ int main() {
                 break;
             case sf::Event::KeyPressed:
                 switch (event.key.code) {
+                case sf::Keyboard::Escape:
                 case sf::Keyboard::Q:
                     win.close();
                     break;
