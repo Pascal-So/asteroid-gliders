@@ -4,6 +4,8 @@
 #include <iostream>
 #include <ostream>
 #include <cmath>
+#include <tuple>
+#include <random>
 
 struct point {
     float x;
@@ -28,6 +30,14 @@ struct point {
     }
 
     point operator/(const float f) const { return point(x/f, y/f); }
+
+    float crossp(const point& p) const {
+        return x * p.y - y * p.x;
+    }
+
+    float dotp(const point& p) const {
+        return x * p.x + y * p.y;
+    }
 
     float sqmag() const {
         return x*x + y*y;
@@ -66,6 +76,12 @@ struct point {
         return *this;
     }
 
+    point& operator/=(float f) {
+        x /= f;
+        y /= f;
+        return *this;
+    }
+
     bool operator<(const point& o) const {
         return std::tie(x, y) < std::tie(o.x, o.y);
     }
@@ -73,17 +89,26 @@ struct point {
     bool operator==(const point& o) const { return x == o.x && y == o.y; }
 
     bool operator!=(const point& o) const { return !((*this) == o); }
+
+    template< typename RNG >
+    static point randomPoint(std::array<point,2> const& bounds, RNG &rng) {
+        std::uniform_real_distribution<float> dist_x(bounds[0].x, bounds[1].x);
+        std::uniform_real_distribution<float> dist_y(bounds[0].y, bounds[1].y);
+
+        return point(dist_x(rng), dist_y(rng));
+    }
+
+    static float crossp(const point& a, const point& b) {
+        return a.crossp(b);
+    }
+
+    static float dotp(const point& a, const point& b) {
+        return a.dotp(b);
+    }
 };
 
 inline std::ostream& operator<<(std::ostream& out, const point& p) {
     return out << "(" << p.x << ", " << p.y << ")";
-}
-
-point randomPoint(std::array<point,2> const& bounds, std::mt19937 &rng) {
-    std::uniform_real_distribution<float> dist_x(bounds[0].x, bounds[1].x);
-    std::uniform_real_distribution<float> dist_y(bounds[0].y, bounds[1].y);
-
-    return point(dist_x(rng), dist_y(rng));
 }
 
 #endif // POINT_HPP
