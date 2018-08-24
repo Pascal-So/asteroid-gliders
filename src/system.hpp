@@ -15,7 +15,6 @@ struct Planet {
 
 class System {
     std::array<point, 2> bounds;
-    std::vector<bool> ccw;
 
     const float gravitational_constant = 2000.0;
 
@@ -25,7 +24,7 @@ class System {
         std::uniform_real_distribution<float> dist_mass(0, max_mass);
         std::bernoulli_distribution dist_ccw(0.5);
         for(auto &p:planets){
-            const bool ccw = true; //dist_ccw(rng);
+            const bool ccw = dist_ccw(rng);
             p = {point::randomPoint(bounds, rng), dist_mass(rng), ccw};
         }
     }
@@ -69,9 +68,23 @@ public:
         return out * gravitational_constant;
     }
 
+    point probeAngularPotentialGradient(point const& pos) const {
+        point out (0.f, 0.f);
+
+        for (auto const& p : planets) {
+            const point r = pos - p.pos;
+            const float planet_contribution =
+                p.mass * (p.ccw ? 1 : -1) / r.sqmag();
+
+            out += point(r.y, -r.x) * planet_contribution;
+        }
+
+        return out;
+    }
+
     float probeWeightedAngleDiff(point const& a, point const& b) const {
         float weighted_angle_diff = 0.f;
-        for (auto &p:planets) {
+        for (auto const& p : planets) {
             const point r_a = a - p.pos;
             const point r_b = b - p.pos;
 

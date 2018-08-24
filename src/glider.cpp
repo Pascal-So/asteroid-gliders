@@ -16,11 +16,11 @@
 unsigned int height = 1000;
 unsigned int width = 1800;
 
-int seed = 49;
-const std::size_t nr_planets = 6;
-const std::size_t nr_gliders = 20000;
+int seed = 3;
+const std::size_t nr_planets = 10;
+const std::size_t nr_gliders = 1000;
 const std::size_t max_steps = 200;
-const float spiral_factor = 4.f;
+const float spiral_factor = 4.0f;
 
 // ##############################################
 
@@ -45,9 +45,15 @@ void drawSingleTrajectory(sf::RenderWindow& win,
                           System const& system,
                           point const& start_pos,
                           const std::size_t max_steps,
-                          sf::Color const& glider_color = sf::Color(255, 255, 255, 20)) {
+                          std::array<point, 2> const& bounds,
+                          sf::Color const& glider_color = sf::Color(255, 255, 255, 20),
+                          const bool print_score = false) {
     const auto points = generateGliderTrajectory(start_pos, system, spiral_factor, max_steps);
 
+    if (print_score) {
+        std::cout << "path score: " << scorePath(system, bounds, points) << "\n";
+    }
+    
     std::vector<sf::Vertex> vertices;
     
     for (auto const& p:points) {
@@ -69,7 +75,7 @@ void drawTrajectories(sf::RenderWindow& win,
 
     for (std::size_t i = 0; i < nr_gliders; ++i) {
         const point p = point::randomPoint(bounds, rng);
-        drawSingleTrajectory(win, system, p, max_steps);
+        drawSingleTrajectory(win, system, p, max_steps, bounds);
     }
 }
 
@@ -82,7 +88,7 @@ void drawPotentialPlot(sf::RenderWindow& win,
         for (float y = bounds[0].y; y <= bounds[1].y - resolution; y += resolution) {
             const point p (x + resolution / 2, y + resolution / 2);
             const float normalized_potential = -(system.probePotential(p)) / 100.f;
-            const uint8_t value = 255.f * fmod(1000.0 * normalized_potential, 1.0);
+            const uint8_t value = 255.f * fmod(200.0 * normalized_potential, 1.0);
             const sf::Color color(value, value, value);
             sf::RectangleShape tile(tile_size);
             tile.setFillColor(color);
@@ -92,26 +98,28 @@ void drawPotentialPlot(sf::RenderWindow& win,
     }
 }
 
-void drawGravity(sf::RenderWindow& win, System const& system,
-                 std::array<point,2> const& bounds, const float resolution = 12.f) {
-    // const sf::Color line_color (255, 255, 255);
+template<typename VectorFieldFunc>
+void drawVectorField(sf::RenderWindow& win,
+                     VectorFieldFunc func,
+                     std::array<point, 2> const& bounds,
+                     const float resolution = 16.f) {
     const sf::Color dot_color (200, 125, 120);
-    const float radius = 1.6f;
+    const float dot_radius = 1.6f;
 
     std::vector<sf::Vertex> lines;
     
     for (float x = bounds[0].x; x <= bounds[1].x - resolution; x += resolution) {
         for (float y = bounds[0].y; y <= bounds[1].y - resolution; y += resolution) {
             const point p (x + resolution / 2, y + resolution / 2);
-            const point grav = system.probeGravity(p).norm() * 8.f;
+            const point vec = func(p).norm() * resolution * 0.8f;
 
-            sf::CircleShape dot(radius);
-            dot.setFillColor(dot_color);
-            dot.setPosition(p.x - radius, p.y - radius);
-            win.draw(dot);
-            
             lines.emplace_back(sf::Vector2f(p.x, p.y));
-            lines.emplace_back(sf::Vector2f(p.x + grav.x, p.y + grav.y));
+            lines.emplace_back(sf::Vector2f(p.x + vec.x, p.y + vec.y));
+
+            sf::CircleShape dot(dot_radius);
+            dot.setFillColor(dot_color);
+            dot.setPosition(p.x - dot_radius, p.y - dot_radius);
+            win.draw(dot);
         }
     }
 
@@ -156,8 +164,11 @@ int main() {
     std::mt19937 rng(seed);
     System system(nr_planets, bounds, rng);
 
-    enum class Display {trajectories, potential, gravity} display = Display::trajectories;
+    enum class Display {
+        trajectories, potential, gravity, angular_gradient
+    } display = Display::trajectories;
     bool redraw = true;
+    bool draw_nice_path = false;
     int nice_path_seed = 1;
 
     while (win.isOpen()) {
@@ -165,9 +176,13 @@ int main() {
         while (win.pollEvent(event)) {
             switch (event.type) {
             case sf::Event::MouseButtonPressed:
-                drawSingleTrajectory(win, system, point(event.mouseButton.x, event.mouseButton.y),
-                    max_steps, sf::Color(255, 0, 0));
-                win.display();
+                {
+                    const point start_pos (event.mouseButton.x, event.mouseButton.y);
+                    drawSingleTrajectory(win, system, start_pos,
+                                         max_steps, bounds,
+                                         sf::Color(255, 0, 0), true);
+                    win.display();
+                }
                 break;
             case sf::Event::Closed:
                 win.close();
@@ -190,6 +205,7 @@ int main() {
                 case sf::Keyboard::T:
                     redraw = true;
                     display = Display::trajectories;
+                    draw_nice_path = false;
                     break;
                 case sf::Keyboard::P:
                     redraw = true;
@@ -198,6 +214,10 @@ int main() {
                 case sf::Keyboard::G:
                     redraw = true;
                     display = Display::gravity;
+                    break;
+                case sf::Keyboard::A:
+                    redraw = true;
+                    display = Display::angular_gradient;
                     break;
                 case sf::Keyboard::S:
                     saveScreenshot(win, seed);
@@ -208,6 +228,7 @@ int main() {
                     } else {
                         ++nice_path_seed;
                     }
+                    draw_nice_path = true;
                     redraw = true;
                     break;
                 default:
@@ -227,16 +248,16 @@ int main() {
             
             switch (display) {
             case Display::trajectories:
-                {
-                    drawTrajectories(win, system, nr_gliders, seed, bounds, max_steps);
+                drawTrajectories(win, system, nr_gliders, seed, bounds, max_steps);
 
-                    /*const size_t nice_path_length = 1000;
+                if (draw_nice_path) {
+                    const size_t nice_path_length = max_steps;
                     const point nice_path_start =
                         findNicePath(system, spiral_factor, nice_path_length,
                                      bounds, nice_path_seed);
 
                     drawSingleTrajectory(win, system, nice_path_start,
-                    nice_path_length, sf::Color(255, 0, 0));*/
+                                         nice_path_length, bounds, sf::Color(255, 0, 0));
                 }
                 break;
             case Display::potential:
@@ -244,7 +265,15 @@ int main() {
                 drawTrajectories(win, system, 10, seed, bounds, max_steps);
                 break;
             case Display::gravity:
-                drawGravity(win, system, bounds);
+                drawVectorField(win, [&system](point const& p){
+                        return system.probeGravity(p);
+                    }, bounds);
+                drawTrajectories(win, system, 10, seed, bounds, max_steps);
+                break;
+            case Display::angular_gradient:
+                drawVectorField(win, [&system](point const& p){
+                        return system.probeAngularPotentialGradient(p);
+                    }, bounds);
                 drawTrajectories(win, system, 10, seed, bounds, max_steps);
                 break;
             }

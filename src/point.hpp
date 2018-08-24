@@ -21,6 +21,8 @@ struct point {
 
     point operator-(const point& o) const { return point(x - o.x, y - o.y); }
 
+    point operator-() const {return point(-x, -y); }
+
     inline friend point operator*(const point& p, float f) {
         return point(p.x * f, p.y * f);
     }

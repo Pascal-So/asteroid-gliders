@@ -6,103 +6,157 @@
 #include <Eigen/Dense>
 #include "system.hpp"
 #include "point.hpp"
+#include "integrator.hpp"
 
-point gliderStep(point const& pos, const float desired_potential, System const& system, const bool ccw) {
-    const float stepsize = 6.f;
+point gliderStep(point const& start_pos, const float angular_potential_factor,
+                       System const& system, const bool ccw) {
 
-    // First calculate the new position by integrating with the midpoint method.
+    auto gradient_func = [&](point const& pos){
+        //
+        //             Glider               Resulting Motion
+        //   angle  <-- •              (for when ccw is true, flipped otherwise)   
+        //   gradient   |                      __
+        //              v gravity             |\                       .
+        //                                      \                      .
+        //              • Planet
+        //
+        //  We have two potentials in the space, the gravitational potential
+        //  and the angular potential. These potentials are summed up, where
+        //  the angular potential is first multiplied by a factor to control
+        //  its infulence.
+        //
+        //  To get a path where the total potential remains zero, we add the
+        //  gradients for both fields, and move in a direction perpendicular
+        //  to the gradient for this total potential.
 
-    point gravity = system.probeGravity(pos).norm();
-    point motion_half (gravity.y, -gravity.x);
-    motion_half *= stepsize / 2;
+        const point gravity_potential_gradient = -system.probeGravity(pos);
+        const point angular_gradient =
+            angular_potential_factor * system.probeAngularPotentialGradient(pos);
 
-    gravity = system.probeGravity(pos + motion_half).norm();
-    point motion (gravity.y, -gravity.x);
-    if (ccw) {
-        motion *= -1;
-    }
-    motion *= stepsize;
+        //  We need a minus sign here because I'm bad at maths..
+        const point total_gradient = gravity_potential_gradient - angular_gradient;
 
-    const point new_pos_initial = pos + motion;
+        const point equipot_motion = point(-total_gradient.y, total_gradient.x).norm();
+        return equipot_motion * (ccw ? 1 : -1);
+    };
 
-    // Uncomment this to only use explicit euler / midpoint method.
-    // return pos + motion_half * 2.f; // Euler
-    // return new_pos_initial;         // Midpoint
-
-
-    // Then we correct the difference to the desired gravitational potential.
-    
-    const float new_potential = system.probePotential(new_pos_initial);
-    const float diff = new_potential - desired_potential;
-    
-    // Here we assume the slope to be linear, because we're only correcting in a small
-    // neighbourhood. We can thus use the fact that the gravitational force vector is
-    // minus the gradient of the potential, so we have: (where '·' denotes the scalar
-    // product)
-    //
-    //      delta potential = offset · -gravity
-    //                      = ± |offset| * |gravity|   // We're only moving along the
-    //                                                 // steepest slope, so the offset
-    //                                                 // and gravity are colinear.
-    //
-    //      |offset| = ± delta potential / |gravity|
-    //
-    // Now we multiply both sides by the normalized gravity to get a vector again.
-    //
-    //      offset = ± delta potential * gravity / |gravity|²
-    //
-    // The sign can be seen to be a minus by thinking about it..
-
-    gravity = system.probeGravity(new_pos_initial);
-    const point corrected_pos_midpoint = new_pos_initial + diff * gravity / gravity.sqmag() / 2.f;
-    gravity = system.probeGravity(corrected_pos_midpoint);
-    const point corrected_pos = new_pos_initial + diff * gravity / gravity.sqmag();
-
-    const bool debug_output = false;
-    if (debug_output) {
-        const float new_diff = system.probePotential(corrected_pos) - desired_potential;
-        std::cerr << "Absolute potential:           " << new_potential << '\n';
-        std::cerr << "Difference before correcting: " << diff << '\n';
-        std::cerr << "Difference after correcting:  " << new_diff << '\n';
-        std::cerr << "Improved error by factor:     " << diff / new_diff << '\n';
-
-        std::cerr << '\n';
-    }
-
-    return corrected_pos;
+    const float stepsize = 10.f;
+    return integrator::rungeKutta4(start_pos, gradient_func, stepsize);
 }
 
-std::vector<point> generateGliderTrajectory(point const& start_pos,
+std::vector<point> generateGliderTrajectory(point pos,
                                             System const& system,
                                             const float spiral_factor,
                                             const std::size_t max_steps) {
-    point last_pos = start_pos;
-    float desired_potential = system.probePotential(last_pos);
-
-    float sq_last_dist = 1.f;
     const float sq_lower_dist_limit = 0.005f;
     const float sq_upper_dist_limit = 400.f;
 
-    std::vector<point> points;
+    std::vector<point> points {pos};
+    const bool ccw = rand()&1;
 
-    int steps = max_steps;
-    while (sq_last_dist > sq_lower_dist_limit &&
-           sq_last_dist < sq_upper_dist_limit &&
-           --steps) {
-        const point new_pos = gliderStep(last_pos, desired_potential, system, false);
+    for (std::size_t step = 0; step < max_steps; ++step) {
+        const point last_pos = pos;
+        pos = gliderStep(pos, spiral_factor, system, ccw);
 
-        if (spiral_factor != 0.f) {
-            const float weighted_angle_diff = system.probeWeightedAngleDiff(last_pos, new_pos);
-            desired_potential += weighted_angle_diff * spiral_factor;
+        const float sq_last_dist = (pos - last_pos).sqmag();
+        if (sq_last_dist > sq_upper_dist_limit ||
+            sq_last_dist < sq_lower_dist_limit) {
+            break;
         }
 
-        sq_last_dist = (new_pos - last_pos).sqmag();
-
-        points.push_back(new_pos);
-        last_pos = new_pos;
+        points.push_back(pos);
     }
 
     return points;
+}
+
+float scorePath(System const& system, std::array<point, 2> const& bounds,
+                std::vector<point> const& path) {
+    float path_length = 0.f;
+    unsigned planet_switches = 0;
+    float penalty = 0.f;
+    std::size_t current_closest_planet = 0;
+    /*std::vector<point> centres;
+      const float curve_check_interval = 50.f;
+      const float last_curve_check = 0.f;
+      std::size_t last_curve_check_index = 0;*/
+    for (std::size_t i = 1; i < path.size(); ++i) {
+        // Only count points inside bounds
+        if (path[i].x < bounds[0].x || path[i].y < bounds[0].y ||
+            path[i].x > bounds[1].x || path[i].y > bounds[1].y) {
+            penalty += 3;
+            continue;
+        }
+
+        path_length += (path[i] - path[i-1]).mag();
+
+        float sq_lowest_dist = std::numeric_limits<float>::max();
+        std::size_t new_closest_planet = 0;
+        for (std::size_t planet_id = 0; planet_id < system.planets.size(); ++planet_id) {
+            const point r = system.planets[planet_id].pos - path[i];
+            if (r.sqmag() < sq_lowest_dist) {
+                sq_lowest_dist = r.sqmag();
+                new_closest_planet = planet_id;
+            }
+        }
+
+        if (new_closest_planet != current_closest_planet) {
+            const point r_current = system.planets[current_closest_planet].pos - path[i];
+            const point r_new = system.planets[new_closest_planet].pos - path[i];
+                
+            // prevent frequent switches near a border
+            if (r_new.sqmag() * 1.2f < r_current.sqmag()) {
+                current_closest_planet = new_closest_planet;
+                ++planet_switches;    
+            }
+        }
+
+        const point r = system.planets[current_closest_planet].pos - path[i];
+        if (r.sqmag() < 100.f) penalty += 500;
+
+        /*
+          if (path_length - last_curve_check > curve_check_interval &&
+          last_curve_check_index < i - 2) {
+                
+          const point
+          a = path[last_curve_check_index],
+          b = path[(last_curve_check_index + i) / 2],
+          c = path[i];
+
+          // Find the centre of the circle described by the three
+          // points a, b, c. Algorithm from
+          // https://math.stackexchange.com/a/1460096
+            
+          Eigen::Matrix<float, 3, 4> data;
+          data <<
+              a.sqmag(), a.x, a.y, 1,
+              b.sqmag(), b.x, b.y, 1,
+              c.sqmag(), c.x, c.y, 1;
+
+          Eigen::Matrix3f m = data.block(0, 1, 3, 3);
+          const float m11 = m.determinant();
+          if (fabs(m11) < 0.001) {
+              // points are roughly colinear
+              continue;
+          }
+            
+          m.col(0) = data.col(0);
+          const float m12 = m.determinant();
+          m.col(1) = data.col(1);
+          const float m13 = m.determinant();
+
+          point center (m12/m11, m13/m11);
+          center /= 2;
+
+          //last_curve_check = path_length;
+          last_curve_check_index = i;
+          }
+        */
+    }
+
+    const float score = 0 * path_length + planet_switches * 100.f - penalty;
+
+    return score;
 }
 
 point findNicePath(System const& system,
@@ -121,70 +175,16 @@ point findNicePath(System const& system,
 
         const auto trajectory = generateGliderTrajectory(p, system, spiral_factor, max_steps);
 
-        float path_length = 0.f;
-        std::vector<point> centres;
-        const float curve_check_interval = 50.f;
-        const float last_curve_check = 0.f;
-        std::size_t last_curve_check_index = 0;
-        for (std::size_t i = 1; i < trajectory.size(); ++i) {
-            // Only count points inside bounds
-            if (trajectory[i].x < bounds[0].x || trajectory[i].y < bounds[0].y ||
-                trajectory[i].x > bounds[1].x || trajectory[i].y > bounds[1].y) {
-                continue;
-            }
-
-            const point diff = trajectory[i] - trajectory[i-1];
-            path_length += diff.mag();
-
-
-            if (path_length - last_curve_check > curve_check_interval &&
-                last_curve_check_index < i - 2) {
-                
-                const point
-                    a = trajectory[last_curve_check_index],
-                    b = trajectory[(last_curve_check_index + i) / 2],
-                    c = trajectory[i];
-
-                // Find the centre of the circle described by the three
-                // points a, b, c. Algorithm from
-                // https://math.stackexchange.com/a/1460096
-            
-                Eigen::Matrix<float, 3, 4> data;
-                data <<
-                    a.sqmag(), a.x, a.y, 1,
-                    b.sqmag(), b.x, b.y, 1,
-                    c.sqmag(), c.x, c.y, 1;
-
-                Eigen::Matrix3f m = data.block(0, 1, 3, 3);
-                const float m11 = m.determinant();
-                if (fabs(m11) < 0.001) {
-                    // points are roughly colinear
-                    continue;
-                }
-            
-                m.col(0) = data.col(0);
-                const float m12 = m.determinant();
-                m.col(1) = data.col(1);
-                const float m13 = m.determinant();
-
-                point center (m12/m11, m13/m11);
-                center /= 2;
-
-                //last_curve_check = path_length;
-                last_curve_check_index = i;
-            }
-        }
-
-        const float score = path_length;
-
-        if (score > candidate_score) {
+        const float score = scorePath(system, bounds, trajectory);
+        
+        if (score >= candidate_score) {
             candidate_score = score;
             candidate = p;
-            std::cerr << "score: " << score << '\n'
-                      << "    path length: " << path_length << '\n';
         }
     }
 
+    std::cout << "found path with score " << candidate_score << '\n';
+    
     return candidate;
 }
 
